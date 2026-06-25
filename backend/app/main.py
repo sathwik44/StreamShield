@@ -1,10 +1,10 @@
-import os
 import sqlite3
 import uuid
 import hashlib
 import math
+import os
 from datetime import datetime
-from fastapi import FastAPI, HTTPException, Request, Depends, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
 
@@ -19,7 +19,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- 2. CITY COORDINATES (For Impossible Travel Math) ---
+# --- 2. CITY COORDINATES ---
 CITIES = {
     "Vijayawada": (16.5062, 80.6480),
     "Delhi": (28.7041, 77.1025),
@@ -38,12 +38,10 @@ def calculate_distance(city1: str, city2: str):
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
     return R * c
 
-# --- 3. DATABASE SETUP ---
-DB_FILE = "securestream_live.db"
-
+# --- 3. DATABASE SETUP (SQLite) ---
 def get_db_connection():
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    conn.row_factory = sqlite3.Row 
+    conn = sqlite3.connect("securestream_live.db")
+    conn.row_factory = sqlite3.Row
     return conn
 
 def init_db():
@@ -103,10 +101,11 @@ def register(user_data: UserAuthSchema):
 
 @app.post("/api/auth/login")
 def login(user_data: UserAuthSchema, request: Request):
-    conn = get_db_connection()
     enforce_risk_threshold(user_data.email)
     
+    conn = get_db_connection()
     user = conn.execute("SELECT * FROM users WHERE email = ?", (user_data.email,)).fetchone()
+    
     if not user or user["hashed_password"] != hashlib.sha256(user_data.password.encode('utf-8')).hexdigest():
         conn.close()
         raise HTTPException(status_code=401, detail="Invalid credentials")
@@ -195,38 +194,28 @@ def get_threat_heap():
         })
         
     return result
+
 @app.get("/api/video/stream/{video_id}")
 def stream_video(video_id: int, request: Request):
-    # 1. Locate the secure file
-    # (In a real app, you would look up the video_id in the DB. We will hardcode it for this demo)
     VIDEO_PATH = "assets/trailers/the_lighter.mp4"
     
     if not os.path.exists(VIDEO_PATH):
         raise HTTPException(status_code=404, detail="Secure asset not found on server.")
 
     file_size = os.path.getsize(VIDEO_PATH)
-
-    # 2. Read the "Range" header sent by the React video player
-    # It looks like this: "bytes=1048576-"
     range_header = request.headers.get("Range")
     
-    # 3. Calculate the Exact Math
     if not range_header:
-        # If no range is requested, start at byte 0 and serve the first 1MB chunk
         start = 0
         end = min(file_size - 1, 1024 * 1024) 
     else:
-        # Parse the requested byte range
         start = int(range_header.replace("bytes=", "").split("-")[0])
-        # Serve exactly 1MB from the requested start point
         end = min(start + (1024 * 1024), file_size - 1) 
 
-    # 4. Read ONLY that specific 1MB chunk from the hard drive in binary mode ("rb")
     with open(VIDEO_PATH, "rb") as video:
         video.seek(start)
         data = video.read(end - start + 1)
 
-    # 5. Build the strict HTTP 206 Partial Content headers
     headers = {
         "Content-Range": f"bytes {start}-{end}/{file_size}",
         "Accept-Ranges": "bytes",
@@ -234,20 +223,17 @@ def stream_video(video_id: int, request: Request):
         "Content-Type": "video/mp4",
     }
 
-    # Return the encrypted chunk!
     return Response(content=data, status_code=206, headers=headers)
+
 @app.get("/api/admin/trace/{session_id}")
 def trace_by_session(session_id: str):
     conn = get_db_connection()
-    
-    # We join the active_sessions table with the users table to expose the culprit
     query = '''
         SELECT u.email, u.suspicion_score, a.location, a.created_at
         FROM active_sessions a
         JOIN users u ON a.user_id = u.id
         WHERE a.session_token = ?
     '''
-    
     culprit = conn.execute(query, (session_id,)).fetchone()
     conn.close()
     
