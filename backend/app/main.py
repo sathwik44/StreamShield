@@ -14,10 +14,12 @@ app = FastAPI(title="SecureStream Enterprise")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"], # In production, put your Vercel URL here
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # THIS LINE IS CRITICAL FOR VIDEO STREAMING:
+    expose_headers=["Content-Range", "Accept-Ranges"] 
 )
 
 # --- 2. CITY COORDINATES ---
@@ -70,6 +72,17 @@ def init_db():
                 session_token TEXT NOT NULL,
                 location TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        # 🔴 NEW: Add the missing table for telemetry logging!
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS stream_logs (
+                id SERIAL PRIMARY KEY,
+                session_token TEXT NOT NULL,
+                movie_title TEXT NOT NULL,
+                access_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                ip_address TEXT,
+                location TEXT
             )
         ''')
         cur.close()
@@ -314,42 +327,58 @@ def seed_database():
     conn.close()
     return {"msg": "System seeded safely without deleting existing users."}
 
+import os
+from fastapi import Request, Response, HTTPException
+
 @app.get("/api/video/stream/{video_id}")
-def stream_video(video_id: int, request: Request):
-    VIDEO_PATH = "assets/trailers/the_lighter.mp4"
-    if not os.path.exists(VIDEO_PATH):
-        raise HTTPException(status_code=404, detail="Secure asset not found on server.")
-
-    file_size = os.path.getsize(VIDEO_PATH)
-    range_header = request.headers.get("Range")
+def stream_video(video_id: str, request: Request):
+    # Update this path to where your video actually lives on Render!
+    video_path = "assets/trailers/the_lighter.mp4" 
     
-    if not range_header:
-        start = 0
-        end = min(file_size - 1, 1024 * 1024) 
-    else:
-        start = int(range_header.replace("bytes=", "").split("-")[0])
-        end = min(start + (1024 * 1024), file_size - 1) 
+    if not os.path.exists(video_path):
+        raise HTTPException(status_code=404, detail="Video file not found on server")
 
-    with open(VIDEO_PATH, "rb") as video:
+    file_size = os.path.getsize(video_path)
+    range_header = request.headers.get("Range")
+
+    if not range_header:
+        # If the browser doesn't ask for a chunk, send the whole file (Fallback)
+        with open(video_path, "rb") as video:
+            return Response(content=video.read(), media_type="video/mp4")
+
+    # The browser requested a chunk (e.g., "bytes=0-1024")
+    try:
+        byte_range = range_header.strip().split("=")[1]
+        start_str, end_str = byte_range.split("-")
+        start = int(start_str)
+        end = int(end_str) if end_str else min(start + 1024 * 1024, file_size - 1) # Send 1MB chunks
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid range header")
+
+    length = end - start + 1
+
+    with open(video_path, "rb") as video:
         video.seek(start)
-        data = video.read(end - start + 1)
+        data = video.read(length)
 
     headers = {
         "Content-Range": f"bytes {start}-{end}/{file_size}",
         "Accept-Ranges": "bytes",
-        "Content-Length": str(len(data)),
+        "Content-Length": str(length),
         "Content-Type": "video/mp4",
     }
-    return Response(content=data, status_code=206, headers=headers)
+
+    return Response(content=data, status_code=206, headers=headers, media_type="video/mp4")
 @app.get("/api/admin/activity")
 def get_recent_activity():
     conn = get_db_connection()
     cur = conn.cursor()
-    # Join with users table to get the email associated with the log
+    # 🔴 FIXED JOIN: Links logs -> active_sessions -> users
     cur.execute('''
         SELECT u.email, l.movie_title, l.ip_address, l.location, l.access_time 
         FROM stream_logs l
-        JOIN users u ON u.email = l.session_token -- Assuming session_token links to identity
+        JOIN active_sessions a ON a.session_token = l.session_token
+        JOIN users u ON u.id = a.user_id
         ORDER BY l.access_time DESC
         LIMIT 20
     ''')
