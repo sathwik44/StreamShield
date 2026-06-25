@@ -247,3 +247,36 @@ def trace_by_session(session_id: str):
         "compromised_location": culprit["location"],
         "login_time": culprit["created_at"]
     }
+@app.post("/api/admin/seed")
+def seed_database():
+    conn = get_db_connection()
+    
+    # 1. Clear out old test data (keeps the admin safe)
+    conn.execute("DELETE FROM users WHERE email != 'admin@securestream.com'")
+    conn.execute("DELETE FROM active_sessions")
+    
+    # 2. Create the targets
+    targets = [
+        ("hacker_delhi@test.com", "password123", 85), # Already locked out!
+        ("suspicious_bob@test.com", "password123", 40), # Mid-tier risk
+        ("normal_alice@test.com", "password123", 0)     # Safe user
+    ]
+    
+    for email, pw, score in targets:
+        hashed_pw = hashlib.sha256(pw.encode('utf-8')).hexdigest()
+        conn.execute("INSERT INTO users (email, hashed_password, suspicion_score) VALUES (?, ?, ?)", 
+                     (email, hashed_pw, score))
+    
+    # 3. Generate fake session tokens so your Trace tool works
+    users = conn.execute("SELECT id, email FROM users").fetchall()
+    for u in users:
+        if u["email"] == "hacker_delhi@test.com":
+            conn.execute("INSERT INTO active_sessions (user_id, session_token, location) VALUES (?, ?, ?)", 
+                         (u["id"], "sess_hacker999", "Delhi"))
+        elif u["email"] == "suspicious_bob@test.com":
+            conn.execute("INSERT INTO active_sessions (user_id, session_token, location) VALUES (?, ?, ?)", 
+                         (u["id"], "sess_bob456", "Mumbai"))
+            
+    conn.commit()
+    conn.close()
+    return {"msg": "System seeded with active targets."}

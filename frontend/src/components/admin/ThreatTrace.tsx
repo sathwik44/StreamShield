@@ -14,6 +14,17 @@ export default function ThreatTrace() {
   const [result, setResult] = useState<TraceResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const handleSeedDB = async () => {
+    setLoading(true);
+    try {
+      await fetch(`${import.meta.env.VITE_API_URL}/api/admin/seed`, { method: 'POST' });
+      alert("Test targets injected into live database! Try tracing 'sess_hacker999' or 'sess_bob456'.");
+    } catch (err) {
+      alert("Failed to seed database.");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const handleTrace = async () => {
     if (!sessionId.trim()) {
@@ -57,11 +68,11 @@ export default function ThreatTrace() {
           style={{ padding: '10px', width: '300px', backgroundColor: '#222', color: '#fff', border: '1px solid #444', borderRadius: '4px' }}
         />
         <button 
-          onClick={handleTrace}
+          onClick={handleSeedDB}
           disabled={loading}
-          style={{ padding: '10px 20px', backgroundColor: '#ff4444', color: '#fff', border: 'none', borderRadius: '4px', cursor: loading ? 'not-allowed' : 'pointer', fontWeight: 'bold' }}
+          style={{ padding: '10px 20px', backgroundColor: '#00cc66', color: '#121212', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}
         >
-          {loading ? 'TRACING...' : 'EXECUTE TRACE'}
+          🧪 INJECT TEST DATA
         </button>
       </div>
 
