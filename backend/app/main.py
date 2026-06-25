@@ -14,11 +14,11 @@ app = FastAPI(title="SecureStream Enterprise")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # In production, put your Vercel URL here
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    # THIS LINE IS CRITICAL FOR VIDEO STREAMING:
+    # CRITICAL FOR VIDEO STREAMING TO WORK ON VERCEL:
     expose_headers=["Content-Range", "Accept-Ranges"] 
 )
 
@@ -45,7 +45,7 @@ def calculate_distance(city1: str, city2: str):
 def get_db_connection():
     DATABASE_URL = os.getenv("DATABASE_URL")
     if not DATABASE_URL:
-        raise RuntimeError("DATABASE_URL environment variable is missing. Check Render settings.")
+        raise RuntimeError("DATABASE_URL environment variable is missing.")
         
     conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
     conn.autocommit = True 
@@ -74,7 +74,7 @@ def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
-        # 🔴 NEW: Add the missing table for telemetry logging!
+        # FIX: The missing table that caused the 500 crash!
         cur.execute('''
             CREATE TABLE IF NOT EXISTS stream_logs (
                 id SERIAL PRIMARY KEY,
@@ -149,7 +149,6 @@ def login(user_data: UserAuthSchema, request: Request):
     if last_session and last_session["location"] != current_city:
         distance_km = calculate_distance(last_session["location"], current_city)
         
-        # Postgres returns proper datetimes!
         last_time = last_session["created_at"]
         if isinstance(last_time, str):
             last_time = datetime.strptime(last_time.split(".")[0], "%Y-%m-%d %H:%M:%S")
@@ -189,18 +188,18 @@ def login(user_data: UserAuthSchema, request: Request):
         "session_id": new_token,
         "risk_score": final_score
     }
+
 @app.post("/api/logs/stream")
 def log_stream(log_data: dict, request: Request):
     conn = get_db_connection()
     cur = conn.cursor()
-    # Captures the user's activity for the Graph Engine
     cur.execute('''
         INSERT INTO stream_logs (session_token, movie_title, ip_address, location) 
         VALUES (%s, %s, %s, %s)
     ''', (
-        log_data["session_token"], 
-        log_data["movie_title"], 
-        request.client.host, 
+        log_data.get("session_token", "Unknown"), 
+        log_data.get("movie_title", "Unknown"), 
+        request.client.host if request.client else "Unknown", 
         request.headers.get("X-Mock-City", "Unknown")
     ))
     conn.commit()
@@ -291,8 +290,6 @@ def seed_database():
     conn = get_db_connection()
     cur = conn.cursor()
     
-    # NO DELETE STATEMENTS HERE. THIS FUNCTION IS NOW PURELY ADDITIVE.
-    
     targets = [
         ("hacker_delhi@test.com", "password123", 85),
         ("suspicious_bob@test.com", "password123", 40),
@@ -301,20 +298,16 @@ def seed_database():
     
     for email, pw, score in targets:
         hashed_pw = hashlib.sha256(pw.encode('utf-8')).hexdigest()
-        
-        # Insert only if not exists
         cur.execute('''
             INSERT INTO users (email, hashed_password, suspicion_score) 
             SELECT %s, %s, %s 
             WHERE NOT EXISTS (SELECT 1 FROM users WHERE email = %s)
         ''', (email, hashed_pw, score, email))
     
-    # Refresh user list to link sessions
     cur.execute("SELECT id, email FROM users WHERE email IN ('hacker_delhi@test.com', 'suspicious_bob@test.com')")
     users = cur.fetchall()
     
     for u in users:
-        # Check if session already exists for this specific user
         cur.execute("SELECT 1 FROM active_sessions WHERE user_id = %s", (u["id"],))
         if not cur.fetchone():
             token = "sess_hacker999" if u["email"] == "hacker_delhi@test.com" else "sess_bob456"
@@ -325,55 +318,41 @@ def seed_database():
     conn.commit()
     cur.close()
     conn.close()
-    return {"msg": "System seeded safely without deleting existing users."}
-
-import os
-from fastapi import Request, Response, HTTPException
+    return {"msg": "System seeded safely."}
 
 @app.get("/api/video/stream/{video_id}")
 def stream_video(video_id: str, request: Request):
-    # Update this path to where your video actually lives on Render!
-    video_path = "assets/trailers/the_lighter.mp4" 
-    
-    if not os.path.exists(video_path):
-        raise HTTPException(status_code=404, detail="Video file not found on server")
+    VIDEO_PATH = "assets/trailers/the_lighter.mp4"
+    if not os.path.exists(VIDEO_PATH):
+        raise HTTPException(status_code=404, detail="Secure asset not found on server.")
 
-    file_size = os.path.getsize(video_path)
+    file_size = os.path.getsize(VIDEO_PATH)
     range_header = request.headers.get("Range")
-
+    
     if not range_header:
-        # If the browser doesn't ask for a chunk, send the whole file (Fallback)
-        with open(video_path, "rb") as video:
-            return Response(content=video.read(), media_type="video/mp4")
+        start = 0
+        end = min(file_size - 1, 1024 * 1024) 
+    else:
+        start = int(range_header.replace("bytes=", "").split("-")[0])
+        end = min(start + (1024 * 1024), file_size - 1) 
 
-    # The browser requested a chunk (e.g., "bytes=0-1024")
-    try:
-        byte_range = range_header.strip().split("=")[1]
-        start_str, end_str = byte_range.split("-")
-        start = int(start_str)
-        end = int(end_str) if end_str else min(start + 1024 * 1024, file_size - 1) # Send 1MB chunks
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid range header")
-
-    length = end - start + 1
-
-    with open(video_path, "rb") as video:
+    with open(VIDEO_PATH, "rb") as video:
         video.seek(start)
-        data = video.read(length)
+        data = video.read(end - start + 1)
 
     headers = {
         "Content-Range": f"bytes {start}-{end}/{file_size}",
         "Accept-Ranges": "bytes",
-        "Content-Length": str(length),
+        "Content-Length": str(len(data)),
         "Content-Type": "video/mp4",
     }
+    return Response(content=data, status_code=206, headers=headers)
 
-    return Response(content=data, status_code=206, headers=headers, media_type="video/mp4")
 @app.get("/api/admin/activity")
 def get_recent_activity():
     conn = get_db_connection()
     cur = conn.cursor()
-    # 🔴 FIXED JOIN: Links logs -> active_sessions -> users
+    # FIX: Correctly join logs to users through active_sessions
     cur.execute('''
         SELECT u.email, l.movie_title, l.ip_address, l.location, l.access_time 
         FROM stream_logs l
