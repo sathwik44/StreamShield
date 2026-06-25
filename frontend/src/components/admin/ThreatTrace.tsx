@@ -1,36 +1,46 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 
-// Define the shape of the data coming from your FastAPI backend
-interface Threat {
-  user: string;
-  score: number;
-  reason: string;
+// Define the shape of the data coming from your new FastAPI endpoint
+interface TraceResult {
+  status: string;
+  culprit_email: string;
+  risk_score: number;
+  compromised_location: string;
+  login_time: string;
 }
 
 export default function ThreatTrace() {
-  const [threats, setThreats] = useState<Threat[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [sessionId, setSessionId] = useState('');
+  const [result, setResult] = useState<TraceResult | null>(null);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  useEffect(() => {
-    const fetchThreats = async () => {
-      try {
-        // VITE_API_URL securely points to your live Render backend
-        const response = await fetch(`${import.meta.env.VITE_API_URL}/api/admin/threats`);
-        if (!response.ok) throw new Error("Failed to fetch threat trace");
-        
-        const data = await response.json();
-        setThreats(data);
-      } catch (err) {
-        setError('Connection to security server lost.');
-        console.error(err);
-      } finally {
-        setLoading(false);
-      }
-    };
+  const handleTrace = async () => {
+    if (!sessionId.trim()) {
+      setError('Please enter a valid Session ID.');
+      return;
+    }
 
-    fetchThreats();
-  }, []);
+    setLoading(true);
+    setError('');
+    setResult(null);
+
+    try {
+      // Calling the specific session trace endpoint on your live Render backend
+      const response = await fetch(`${import.meta.env.VITE_API_URL}/api/admin/trace/${sessionId.trim()}`);
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.detail || 'Failed to trace session.');
+      }
+      
+      setResult(data);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <div style={{ padding: '2rem', color: '#fff', backgroundColor: '#121212', minHeight: '100vh', fontFamily: 'monospace' }}>
@@ -38,30 +48,46 @@ export default function ThreatTrace() {
         🔴 ACTIVE THREAT TRACE
       </h2>
       
-      {loading && <p style={{ color: '#888' }}>Establishing secure connection to backend...</p>}
-      {error && <p style={{ color: '#ff4444' }}>{error}</p>}
-
-      {!loading && !error && threats.length === 0 && (
-        <p style={{ color: '#00cc66' }}>✅ No geographic anomalies detected. System secure.</p>
-      )}
-
-      <div style={{ marginTop: '20px' }}>
-        {threats.map((threat, index) => (
-          <div key={index} style={{ 
-            backgroundColor: '#1e1e1e', 
-            padding: '15px', 
-            marginBottom: '10px', 
-            borderRadius: '5px',
-            borderLeft: threat.score >= 80 ? '5px solid #ff4444' : '5px solid #ffaa00'
-          }}>
-            <h3 style={{ margin: '0 0 5px 0', color: threat.score >= 80 ? '#ff4444' : '#ffaa00' }}>
-              Risk Score: {threat.score}% {threat.score >= 80 && '(ACCOUNT LOCKED)'}
-            </h3>
-            <p style={{ margin: '5px 0', color: '#ccc' }}><strong>Target:</strong> {threat.user}</p>
-            <p style={{ margin: '5px 0', color: '#888' }}><strong>Trace Logic:</strong> {threat.reason}</p>
-          </div>
-        ))}
+      <div style={{ marginBottom: '20px', display: 'flex', gap: '10px' }}>
+        <input 
+          type="text" 
+          placeholder="Enter sess_..." 
+          value={sessionId}
+          onChange={(e) => setSessionId(e.target.value)}
+          style={{ padding: '10px', width: '300px', backgroundColor: '#222', color: '#fff', border: '1px solid #444', borderRadius: '4px' }}
+        />
+        <button 
+          onClick={handleTrace}
+          disabled={loading}
+          style={{ padding: '10px 20px', backgroundColor: '#ff4444', color: '#fff', border: 'none', borderRadius: '4px', cursor: loading ? 'not-allowed' : 'pointer', fontWeight: 'bold' }}
+        >
+          {loading ? 'TRACING...' : 'EXECUTE TRACE'}
+        </button>
       </div>
+
+      {error && <p style={{ color: '#ff4444', backgroundColor: '#330000', padding: '10px', borderRadius: '4px' }}>⚠️ {error}</p>}
+
+      {result && (
+        <div style={{ 
+          backgroundColor: '#1e1e1e', 
+          padding: '20px', 
+          borderRadius: '5px',
+          borderLeft: result.risk_score >= 80 ? '5px solid #ff4444' : '5px solid #00cc66'
+        }}>
+          <h3 style={{ margin: '0 0 15px 0', color: '#fff' }}>
+            {result.status}
+          </h3>
+          <p style={{ margin: '8px 0', color: '#ccc' }}><strong>Culprit Target:</strong> <span style={{ color: '#ffaa00' }}>{result.culprit_email}</span></p>
+          <p style={{ margin: '8px 0', color: '#ccc' }}><strong>Compromised Location:</strong> {result.compromised_location}</p>
+          <p style={{ margin: '8px 0', color: '#ccc' }}><strong>Timestamp:</strong> {result.login_time}</p>
+          <p style={{ margin: '8px 0', color: '#ccc' }}>
+            <strong>Current Risk Score:</strong> 
+            <span style={{ color: result.risk_score >= 80 ? '#ff4444' : '#00cc66', marginLeft: '10px', fontWeight: 'bold' }}>
+              {result.risk_score}% {result.risk_score >= 80 && '(ACCOUNT LOCKED)'}
+            </span>
+          </p>
+        </div>
+      )}
     </div>
   );
 }
