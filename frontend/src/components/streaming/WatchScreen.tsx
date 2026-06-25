@@ -3,7 +3,6 @@ import VideoPlayer from './VideoPlayer';
 import MovieCatalog from './MovieCatalog'; 
 
 export default function WatchScreen() {
-  // Dynamically pull the session ID for the forensic watermark
   const currentSessionId = localStorage.getItem("session_id") || "GUEST_SESSION"; 
 
   const [isPlaying, setIsPlaying] = useState(false);
@@ -12,7 +11,6 @@ export default function WatchScreen() {
 
   const handlePlayMovie = async (title: string, url: string) => {
     try {
-      // 1. Log the streaming event to your Render database
       await fetch(`${import.meta.env.VITE_API_URL}/api/logs/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -22,10 +20,9 @@ export default function WatchScreen() {
         })
       });
     } catch (error) {
-      console.error("Telemetry failed, but continuing playback:", error);
+      console.error("Telemetry failed:", error);
     }
 
-    // 2. Proceed with video playback
     setCurrentMovieTitle(title);
     setCurrentMovieUrl(url);
     setIsPlaying(true); 
@@ -33,8 +30,6 @@ export default function WatchScreen() {
 
   return (
     <div className="flex flex-col px-8 font-sans">
-      
-      {/* Main Content Area */}
       <div className="flex-grow flex flex-col max-w-7xl mx-auto w-full">
         {isPlaying ? (
           <VideoPlayer 
@@ -49,7 +44,6 @@ export default function WatchScreen() {
           </div>
         )}
       </div>
-
     </div>
   );
 }
