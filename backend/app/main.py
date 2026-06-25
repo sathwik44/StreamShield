@@ -236,3 +236,28 @@ def stream_video(video_id: int, request: Request):
 
     # Return the encrypted chunk!
     return Response(content=data, status_code=206, headers=headers)
+@app.get("/api/admin/trace/{session_id}")
+def trace_by_session(session_id: str):
+    conn = get_db_connection()
+    
+    # We join the active_sessions table with the users table to expose the culprit
+    query = '''
+        SELECT u.email, u.suspicion_score, a.location, a.created_at
+        FROM active_sessions a
+        JOIN users u ON a.user_id = u.id
+        WHERE a.session_token = ?
+    '''
+    
+    culprit = conn.execute(query, (session_id,)).fetchone()
+    conn.close()
+    
+    if not culprit:
+        raise HTTPException(status_code=404, detail="Trace Failed: Session ID not found or already deleted.")
+        
+    return {
+        "status": "TRACE SUCCESSFUL",
+        "culprit_email": culprit["email"],
+        "risk_score": culprit["suspicion_score"],
+        "compromised_location": culprit["location"],
+        "login_time": culprit["created_at"]
+    }
