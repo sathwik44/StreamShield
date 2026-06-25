@@ -176,6 +176,24 @@ def login(user_data: UserAuthSchema, request: Request):
         "session_id": new_token,
         "risk_score": final_score
     }
+@app.post("/api/logs/stream")
+def log_stream(log_data: dict, request: Request):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    # Captures the user's activity for the Graph Engine
+    cur.execute('''
+        INSERT INTO stream_logs (session_token, movie_title, ip_address, location) 
+        VALUES (%s, %s, %s, %s)
+    ''', (
+        log_data["session_token"], 
+        log_data["movie_title"], 
+        request.client.host, 
+        request.headers.get("X-Mock-City", "Unknown")
+    ))
+    conn.commit()
+    cur.close()
+    conn.close()
+    return {"status": "logged"}
 
 @app.get("/api/admin/users")
 def get_all_users():
