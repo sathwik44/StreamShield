@@ -1,8 +1,9 @@
-import sqlite3
+import os
+import psycopg2
+from psycopg2.extras import RealDictCursor
 import uuid
 import hashlib
 import math
-import os
 from datetime import datetime
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -38,35 +39,43 @@ def calculate_distance(city1: str, city2: str):
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
     return R * c
 
-# --- 3. DATABASE SETUP (SQLite) ---
+# --- 3. DATABASE SETUP (Neon PostgreSQL) ---
 def get_db_connection():
-    conn = sqlite3.connect("securestream_live.db")
-    conn.row_factory = sqlite3.Row
+    DATABASE_URL = os.getenv("DATABASE_URL")
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL environment variable is missing. Check Render settings.")
+        
+    conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+    conn.autocommit = True 
     return conn
 
 def init_db():
-    conn = get_db_connection()
-    conn.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            email TEXT UNIQUE NOT NULL,
-            hashed_password TEXT NOT NULL,
-            role TEXT DEFAULT 'user',
-            suspicion_score INTEGER DEFAULT 0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    conn.execute('''
-        CREATE TABLE IF NOT EXISTS active_sessions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            session_token TEXT NOT NULL,
-            location TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    conn.commit()
-    conn.close()
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                email TEXT UNIQUE NOT NULL,
+                hashed_password TEXT NOT NULL,
+                role TEXT DEFAULT 'user',
+                suspicion_score INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS active_sessions (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                session_token TEXT NOT NULL,
+                location TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"Skipping DB Init locally. Ensure cloud deployment. Error: {e}")
 
 init_db()
 
@@ -77,7 +86,10 @@ class UserAuthSchema(BaseModel):
 
 def enforce_risk_threshold(email: str):
     conn = get_db_connection()
-    user = conn.execute("SELECT suspicion_score FROM users WHERE email = ?", (email,)).fetchone()
+    cur = conn.cursor()
+    cur.execute("SELECT suspicion_score FROM users WHERE email = %s", (email,))
+    user = cur.fetchone()
+    cur.close()
     conn.close()
     
     if user and user["suspicion_score"] >= 80:
@@ -87,15 +99,18 @@ def enforce_risk_threshold(email: str):
 @app.post("/api/auth/register")
 def register(user_data: UserAuthSchema):
     conn = get_db_connection()
-    if conn.execute("SELECT email FROM users WHERE email = ?", (user_data.email,)).fetchone():
+    cur = conn.cursor()
+    cur.execute("SELECT email FROM users WHERE email = %s", (user_data.email,))
+    if cur.fetchone():
+        cur.close()
         conn.close()
         raise HTTPException(status_code=400, detail="Email already registered")
     
     hashed_pw = hashlib.sha256(user_data.password.encode('utf-8')).hexdigest()
     role = "admin" if user_data.email == "admin@securestream.com" else "user"
     
-    conn.execute("INSERT INTO users (email, hashed_password, role) VALUES (?, ?, ?)", (user_data.email, hashed_pw, role))
-    conn.commit()
+    cur.execute("INSERT INTO users (email, hashed_password, role) VALUES (%s, %s, %s)", (user_data.email, hashed_pw, role))
+    cur.close()
     conn.close()
     return {"msg": "Registration successful"}
 
@@ -104,46 +119,54 @@ def login(user_data: UserAuthSchema, request: Request):
     enforce_risk_threshold(user_data.email)
     
     conn = get_db_connection()
-    user = conn.execute("SELECT * FROM users WHERE email = ?", (user_data.email,)).fetchone()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM users WHERE email = %s", (user_data.email,))
+    user = cur.fetchone()
     
     if not user or user["hashed_password"] != hashlib.sha256(user_data.password.encode('utf-8')).hexdigest():
+        cur.close()
         conn.close()
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     current_city = request.headers.get("X-Mock-City", "Vijayawada")
     
-    last_session = conn.execute(
-        "SELECT location, created_at FROM active_sessions WHERE user_id = ? ORDER BY created_at DESC LIMIT 1", (user["id"],)
-    ).fetchone()
+    cur.execute("SELECT location, created_at FROM active_sessions WHERE user_id = %s ORDER BY created_at DESC LIMIT 1", (user["id"],))
+    last_session = cur.fetchone()
 
     if last_session and last_session["location"] != current_city:
         distance_km = calculate_distance(last_session["location"], current_city)
-        last_time = datetime.strptime(last_session["created_at"], "%Y-%m-%d %H:%M:%S")
+        
+        # Postgres returns proper datetimes!
+        last_time = last_session["created_at"]
+        if isinstance(last_time, str):
+            last_time = datetime.strptime(last_time.split(".")[0], "%Y-%m-%d %H:%M:%S")
+            
         time_diff_hours = (datetime.utcnow() - last_time).total_seconds() / 3600
         time_diff_hours = max(time_diff_hours, 0.001) 
-        
         speed_kmh = distance_km / time_diff_hours
         
         if speed_kmh > 1000:
             new_score = user["suspicion_score"] + 20
-            conn.execute("UPDATE users SET suspicion_score = ? WHERE id = ?", (new_score, user["id"]))
-            conn.commit()
+            cur.execute("UPDATE users SET suspicion_score = %s WHERE id = %s", (new_score, user["id"]))
             
             if new_score >= 80:
-                conn.execute("DELETE FROM active_sessions WHERE user_id = ?", (user["id"],))
-                conn.commit()
+                cur.execute("DELETE FROM active_sessions WHERE user_id = %s", (user["id"],))
+                cur.close()
                 conn.close()
                 raise HTTPException(status_code=403, detail="Account Locked: Risk Score hit 80%.")
 
-    sessions = conn.execute("SELECT id FROM active_sessions WHERE user_id = ? ORDER BY created_at ASC", (user["id"],)).fetchall()
+    cur.execute("SELECT id FROM active_sessions WHERE user_id = %s ORDER BY created_at ASC", (user["id"],))
+    sessions = cur.fetchall()
     if len(sessions) >= 2:
-        conn.execute("DELETE FROM active_sessions WHERE id = ?", (sessions[0]["id"],))
+        cur.execute("DELETE FROM active_sessions WHERE id = %s", (sessions[0]["id"],))
 
     new_token = f"sess_{uuid.uuid4().hex[:12]}"
-    conn.execute("INSERT INTO active_sessions (user_id, session_token, location) VALUES (?, ?, ?)", (user["id"], new_token, current_city))
+    cur.execute("INSERT INTO active_sessions (user_id, session_token, location) VALUES (%s, %s, %s)", (user["id"], new_token, current_city))
     
-    final_score = conn.execute("SELECT suspicion_score FROM users WHERE id = ?", (user["id"],)).fetchone()["suspicion_score"]
-    conn.commit()
+    cur.execute("SELECT suspicion_score FROM users WHERE id = %s", (user["id"],))
+    final_score = cur.fetchone()["suspicion_score"]
+    
+    cur.close()
     conn.close()
         
     return {
@@ -157,32 +180,42 @@ def login(user_data: UserAuthSchema, request: Request):
 @app.get("/api/admin/users")
 def get_all_users():
     conn = get_db_connection()
-    users = conn.execute("SELECT id, email, role, suspicion_score, created_at FROM users").fetchall()
+    cur = conn.cursor()
+    cur.execute("SELECT id, email, role, suspicion_score, created_at FROM users")
+    users = cur.fetchall()
     
     result = []
     for u in users:
-        latest_session = conn.execute("SELECT session_token FROM active_sessions WHERE user_id = ? ORDER BY created_at DESC LIMIT 1", (u["id"],)).fetchone()
+        cur.execute("SELECT session_token FROM active_sessions WHERE user_id = %s ORDER BY created_at DESC LIMIT 1", (u["id"],))
+        latest_session = cur.fetchone()
+        
+        join_date = u["created_at"].strftime("%Y-%m-%d %H:%M:%S") if isinstance(u["created_at"], datetime) else u["created_at"]
+        
         result.append({
             "id": u["id"],
             "email": u["email"],
             "is_active": "Suspended" if u["suspicion_score"] >= 80 else "Active",
-            "joined": u["created_at"],
+            "joined": join_date,
             "session_id": latest_session["session_token"] if latest_session else "N/A",
             "risk_score": u["suspicion_score"]
         })
         
+    cur.close()
     conn.close()
     return result
 
 @app.get("/api/admin/threats")
 def get_threat_heap():
     conn = get_db_connection()
-    threats = conn.execute('''
+    cur = conn.cursor()
+    cur.execute('''
         SELECT email, suspicion_score 
         FROM users 
         WHERE suspicion_score > 0 
         ORDER BY suspicion_score DESC
-    ''').fetchall()
+    ''')
+    threats = cur.fetchall()
+    cur.close()
     conn.close()
     
     result = []
@@ -192,13 +225,73 @@ def get_threat_heap():
             "score": t["suspicion_score"],
             "reason": "Geographic Anomaly / Impossible Travel"
         })
-        
     return result
+
+@app.get("/api/admin/trace/{session_id}")
+def trace_by_session(session_id: str):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    query = '''
+        SELECT u.email, u.suspicion_score, a.location, a.created_at
+        FROM active_sessions a
+        JOIN users u ON a.user_id = u.id
+        WHERE a.session_token = %s
+    '''
+    cur.execute(query, (session_id,))
+    culprit = cur.fetchone()
+    cur.close()
+    conn.close()
+    
+    if not culprit:
+        raise HTTPException(status_code=404, detail="Trace Failed: Session ID not found or already deleted.")
+        
+    login_time = culprit["created_at"].strftime("%Y-%m-%d %H:%M:%S") if isinstance(culprit["created_at"], datetime) else culprit["created_at"]
+        
+    return {
+        "status": "TRACE SUCCESSFUL",
+        "culprit_email": culprit["email"],
+        "risk_score": culprit["suspicion_score"],
+        "compromised_location": culprit["location"],
+        "login_time": login_time
+    }
+
+@app.post("/api/admin/seed")
+def seed_database():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
+    cur.execute("DELETE FROM users WHERE email != 'admin@securestream.com'")
+    cur.execute("DELETE FROM active_sessions")
+    
+    targets = [
+        ("hacker_delhi@test.com", "password123", 85),
+        ("suspicious_bob@test.com", "password123", 40),
+        ("normal_alice@test.com", "password123", 0)
+    ]
+    
+    for email, pw, score in targets:
+        hashed_pw = hashlib.sha256(pw.encode('utf-8')).hexdigest()
+        cur.execute("INSERT INTO users (email, hashed_password, suspicion_score) VALUES (%s, %s, %s)", 
+                     (email, hashed_pw, score))
+    
+    cur.execute("SELECT id, email FROM users")
+    users = cur.fetchall()
+    
+    for u in users:
+        if u["email"] == "hacker_delhi@test.com":
+            cur.execute("INSERT INTO active_sessions (user_id, session_token, location) VALUES (%s, %s, %s)", 
+                         (u["id"], "sess_hacker999", "Delhi"))
+        elif u["email"] == "suspicious_bob@test.com":
+            cur.execute("INSERT INTO active_sessions (user_id, session_token, location) VALUES (%s, %s, %s)", 
+                         (u["id"], "sess_bob456", "Mumbai"))
+            
+    cur.close()
+    conn.close()
+    return {"msg": "System seeded with active targets."}
 
 @app.get("/api/video/stream/{video_id}")
 def stream_video(video_id: int, request: Request):
     VIDEO_PATH = "assets/trailers/the_lighter.mp4"
-    
     if not os.path.exists(VIDEO_PATH):
         raise HTTPException(status_code=404, detail="Secure asset not found on server.")
 
@@ -222,61 +315,4 @@ def stream_video(video_id: int, request: Request):
         "Content-Length": str(len(data)),
         "Content-Type": "video/mp4",
     }
-
     return Response(content=data, status_code=206, headers=headers)
-
-@app.get("/api/admin/trace/{session_id}")
-def trace_by_session(session_id: str):
-    conn = get_db_connection()
-    query = '''
-        SELECT u.email, u.suspicion_score, a.location, a.created_at
-        FROM active_sessions a
-        JOIN users u ON a.user_id = u.id
-        WHERE a.session_token = ?
-    '''
-    culprit = conn.execute(query, (session_id,)).fetchone()
-    conn.close()
-    
-    if not culprit:
-        raise HTTPException(status_code=404, detail="Trace Failed: Session ID not found or already deleted.")
-        
-    return {
-        "status": "TRACE SUCCESSFUL",
-        "culprit_email": culprit["email"],
-        "risk_score": culprit["suspicion_score"],
-        "compromised_location": culprit["location"],
-        "login_time": culprit["created_at"]
-    }
-@app.post("/api/admin/seed")
-def seed_database():
-    conn = get_db_connection()
-    
-    # 1. Clear out old test data (keeps the admin safe)
-    conn.execute("DELETE FROM users WHERE email != 'admin@securestream.com'")
-    conn.execute("DELETE FROM active_sessions")
-    
-    # 2. Create the targets
-    targets = [
-        ("hacker_delhi@test.com", "password123", 85), # Already locked out!
-        ("suspicious_bob@test.com", "password123", 40), # Mid-tier risk
-        ("normal_alice@test.com", "password123", 0)     # Safe user
-    ]
-    
-    for email, pw, score in targets:
-        hashed_pw = hashlib.sha256(pw.encode('utf-8')).hexdigest()
-        conn.execute("INSERT INTO users (email, hashed_password, suspicion_score) VALUES (?, ?, ?)", 
-                     (email, hashed_pw, score))
-    
-    # 3. Generate fake session tokens so your Trace tool works
-    users = conn.execute("SELECT id, email FROM users").fetchall()
-    for u in users:
-        if u["email"] == "hacker_delhi@test.com":
-            conn.execute("INSERT INTO active_sessions (user_id, session_token, location) VALUES (?, ?, ?)", 
-                         (u["id"], "sess_hacker999", "Delhi"))
-        elif u["email"] == "suspicious_bob@test.com":
-            conn.execute("INSERT INTO active_sessions (user_id, session_token, location) VALUES (?, ?, ?)", 
-                         (u["id"], "sess_bob456", "Mumbai"))
-            
-    conn.commit()
-    conn.close()
-    return {"msg": "System seeded with active targets."}
