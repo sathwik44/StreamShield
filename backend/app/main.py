@@ -278,8 +278,7 @@ def seed_database():
     conn = get_db_connection()
     cur = conn.cursor()
     
-    # 1. REMOVE THE DELETE STATEMENTS
-    # We no longer wipe the database. 
+    # NO DELETE STATEMENTS HERE. THIS FUNCTION IS NOW PURELY ADDITIVE.
     
     targets = [
         ("hacker_delhi@test.com", "password123", 85),
@@ -290,33 +289,30 @@ def seed_database():
     for email, pw, score in targets:
         hashed_pw = hashlib.sha256(pw.encode('utf-8')).hexdigest()
         
-        # 2. USE "ON CONFLICT" TO PREVENT DUPLICATES/ERRORS
-        # This inserts the user only if the email does not already exist
+        # Insert only if not exists
         cur.execute('''
             INSERT INTO users (email, hashed_password, suspicion_score) 
-            VALUES (%s, %s, %s)
-            ON CONFLICT (email) DO NOTHING
-        ''', (email, hashed_pw, score))
+            SELECT %s, %s, %s 
+            WHERE NOT EXISTS (SELECT 1 FROM users WHERE email = %s)
+        ''', (email, hashed_pw, score, email))
     
-    # 3. LINK SESSIONS SAFELY
-    cur.execute("SELECT id, email FROM users")
+    # Refresh user list to link sessions
+    cur.execute("SELECT id, email FROM users WHERE email IN ('hacker_delhi@test.com', 'suspicious_bob@test.com')")
     users = cur.fetchall()
     
     for u in users:
-        # Check if session already exists so we don't duplicate logs
+        # Check if session already exists for this specific user
         cur.execute("SELECT 1 FROM active_sessions WHERE user_id = %s", (u["id"],))
         if not cur.fetchone():
-            if u["email"] == "hacker_delhi@test.com":
-                cur.execute("INSERT INTO active_sessions (user_id, session_token, location) VALUES (%s, %s, %s)", 
-                            (u["id"], "sess_hacker999", "Delhi"))
-            elif u["email"] == "suspicious_bob@test.com":
-                cur.execute("INSERT INTO active_sessions (user_id, session_token, location) VALUES (%s, %s, %s)", 
-                            (u["id"], "sess_bob456", "Mumbai"))
+            token = "sess_hacker999" if u["email"] == "hacker_delhi@test.com" else "sess_bob456"
+            loc = "Delhi" if u["email"] == "hacker_delhi@test.com" else "Mumbai"
+            cur.execute("INSERT INTO active_sessions (user_id, session_token, location) VALUES (%s, %s, %s)", 
+                        (u["id"], token, loc))
             
     conn.commit()
     cur.close()
     conn.close()
-    return {"msg": "System seeded without data loss."}
+    return {"msg": "System seeded safely without deleting existing users."}
 
 @app.get("/api/video/stream/{video_id}")
 def stream_video(video_id: int, request: Request):
