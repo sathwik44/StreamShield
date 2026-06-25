@@ -278,7 +278,7 @@ def seed_database():
     conn = get_db_connection()
     cur = conn.cursor()
     
-    cur.execute("DELETE FROM users WHERE email != 'admin@securestream.com'")
+    cur.execute("DELETE FROM users WHERE email NOT IN ('admin@securestream.com', 'your_email@example.com')")
     cur.execute("DELETE FROM active_sessions")
     
     targets = [
