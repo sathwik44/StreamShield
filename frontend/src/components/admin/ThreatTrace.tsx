@@ -67,6 +67,17 @@ export default function ThreatTrace() {
           onChange={(e) => setSessionId(e.target.value)}
           style={{ padding: '10px', width: '300px', backgroundColor: '#222', color: '#fff', border: '1px solid #444', borderRadius: '4px' }}
         />
+        
+        {/* BUTTON 1: THE MISSING TRACE BUTTON */}
+        <button 
+          onClick={handleTrace}
+          disabled={loading}
+          style={{ padding: '10px 20px', backgroundColor: '#e63946', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}
+        >
+          EXECUTE TRACE
+        </button>
+
+        {/* BUTTON 2: YOUR NEW INJECTION BUTTON */}
         <button 
           onClick={handleSeedDB}
           disabled={loading}
