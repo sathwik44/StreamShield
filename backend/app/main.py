@@ -334,3 +334,19 @@ def stream_video(video_id: int, request: Request):
         "Content-Type": "video/mp4",
     }
     return Response(content=data, status_code=206, headers=headers)
+@app.get("/api/admin/activity")
+def get_recent_activity():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    # Join with users table to get the email associated with the log
+    cur.execute('''
+        SELECT u.email, l.movie_title, l.ip_address, l.location, l.access_time 
+        FROM stream_logs l
+        JOIN users u ON u.email = l.session_token -- Assuming session_token links to identity
+        ORDER BY l.access_time DESC
+        LIMIT 20
+    ''')
+    logs = cur.fetchall()
+    cur.close()
+    conn.close()
+    return logs
