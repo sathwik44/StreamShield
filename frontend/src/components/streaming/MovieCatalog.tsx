@@ -8,17 +8,16 @@ export default function MovieCatalog({ onPlayClick }: MovieCatalogProps) {
   // 1. STATE FOR THE ROTATING CAROUSEL
   const [currentSlide, setCurrentSlide] = useState(0);
 
-  // 2. THE MOVIE DATA OBJECTS WITH YOUR EXACT LINKS
+  // 2. THE MOVIE DATA OBJECTS WITH SECURE BACKEND LINKS
   const featuredMovies = [
     {
       id: 1,
       title: "Baahubali",
       tag: "BLOCKBUSTER PREMIERE",
       description: "An epic action drama centered around a legendary warrior kingdom, familial betrayal, and an exiled heir who returns to reclaim his rightful throne.",
-      // Using your live web address link
       backdropUrl: "https://ksboxoffice.com/wp-content/uploads/2025/10/G4F6mdxXgAAhtFA-e1761936174468-1024x580.jpg", 
-      // The verified YouTube embed trailer URL
-      streamUrl: "https://www.youtube.com/embed/22oYiWnAcKM" 
+      // 🔴 CHANGED: Now points to your SecureStream backend
+      streamUrl: `${import.meta.env.VITE_API_URL}/api/video/stream/1` 
     },
     {
       id: 2,
@@ -26,7 +25,8 @@ export default function MovieCatalog({ onPlayClick }: MovieCatalogProps) {
       tag: "FEATURED SHORT FILM",
       description: "A stylish, fast-paced cinematic short featuring brilliant practical lighting and high-tension scene composition.",
       backdropUrl: "https://images.unsplash.com/photo-1485846234645-a62644f84728?q=80&w=2059&auto=format&fit=crop", 
-      streamUrl: "https://www.youtube.com/embed/dQw4w9WgXcQ" 
+      // 🔴 CHANGED: Now points to your SecureStream backend
+      streamUrl: `${import.meta.env.VITE_API_URL}/api/video/stream/2` 
     }
   ];
 
