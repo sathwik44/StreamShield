@@ -14,6 +14,7 @@ export default function ThreatTrace() {
   const [result, setResult] = useState<TraceResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+
   const handleSeedDB = async () => {
     setLoading(true);
     try {
@@ -68,7 +69,7 @@ export default function ThreatTrace() {
           style={{ padding: '10px', width: '300px', backgroundColor: '#222', color: '#fff', border: '1px solid #444', borderRadius: '4px' }}
         />
         
-        {/* BUTTON 1: THE MISSING TRACE BUTTON */}
+        {/* BUTTON 1: THE TRACE BUTTON (This fixes the Vercel error!) */}
         <button 
           onClick={handleTrace}
           disabled={loading}
