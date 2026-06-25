@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import VideoPlayer from './VideoPlayer'; 
 import MovieCatalog from './MovieCatalog'; 
 
