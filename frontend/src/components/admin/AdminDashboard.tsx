@@ -20,15 +20,15 @@ export default function AdminDashboard() {
   const fetchDashboardData = async () => {
     setIsLoading(true);
     try {
-      // 1. Fetch Live Users
-      const usersResponse = await fetch("http://127.0.0.1:8011/api/admin/users", { cache: "no-store" });
+      // 1. Fetch Registered Users
+      const usersResponse = await fetch(`${import.meta.env.VITE_API_URL}/api/admin/users`, { cache: "no-store" });
       if (usersResponse.ok) {
         const userData = await usersResponse.json();
         setRegisteredUsers(userData);
       }
 
       // 2. Fetch Live Threats
-      const threatsResponse = await fetch("http://127.0.0.1:8011/api/admin/threats", { cache: "no-store" });
+      const threatsResponse = await fetch(`${import.meta.env.VITE_API_URL}/api/admin/threats`, { cache: "no-store" });
       if (threatsResponse.ok) {
         const threatData = await threatsResponse.json();
         setThreats(threatData);

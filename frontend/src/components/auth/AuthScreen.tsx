@@ -22,7 +22,7 @@ export default function AuthScreen({ onLogin }: AuthScreenProps) {
     const endpoint = isRegistering ? "/api/auth/register" : "/api/auth/login";
     
     try {
-      const response = await fetch(`http://127.0.0.1:8011${endpoint}`, {
+      const response = await fetch(`${import.meta.env.VITE_API_URL}${endpoint}`, {
         method: "POST",
         headers: { 
             "Content-Type": "application/json",
