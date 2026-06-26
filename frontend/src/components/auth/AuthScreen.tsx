@@ -11,7 +11,7 @@ export default function AuthScreen({ onLogin }: AuthScreenProps) {
   const [errorMsg, setErrorMsg] = useState("");
   const [successMsg, setSuccessMsg] = useState(""); 
   
-  // <-- NEW: State to hold our fake GPS location for testing
+  // State to hold our fake GPS location for testing
   const [mockCity, setMockCity] = useState("Vijayawada"); 
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -26,7 +26,7 @@ export default function AuthScreen({ onLogin }: AuthScreenProps) {
         method: "POST",
         headers: { 
             "Content-Type": "application/json",
-            "X-Mock-City": mockCity // <-- NEW: Sending the fake location to Python
+            "X-Mock-City": mockCity 
         },
         body: JSON.stringify({ email, password })
       });
@@ -43,6 +43,11 @@ export default function AuthScreen({ onLogin }: AuthScreenProps) {
         setSuccessMsg("Registration successful! Please log in."); 
         setPassword(""); 
       } else {
+        // 🚀 THE FIX: Save the session ID so the video player can read it
+        if (data.session_id) {
+          localStorage.setItem("session_id", data.session_id);
+        }
+        
         // Send the token and the role (admin or user) back up to App.tsx
         onLogin(data.access_token, data.role);
       }
@@ -98,7 +103,6 @@ export default function AuthScreen({ onLogin }: AuthScreenProps) {
             />
           </div>
 
-          {/* NEW: LOCATION SPOOFER UI */}
           {!isRegistering && (
             <div className="space-y-1 pt-2">
               <label className="text-xs font-bold text-yellow-500 tracking-wider">SIMULATE LOGIN LOCATION (TESTING)</label>
