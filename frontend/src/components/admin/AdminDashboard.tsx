@@ -25,7 +25,7 @@ export default function AdminDashboard() {
 
   // Helper to get authorization headers
   const getAuthHeaders = () => {
-    const token = localStorage.getItem('token'); // Adjust this key if your AuthScreen saves it differently
+    const token = localStorage.getItem('access_token'); // <-- CHANGED to access_token
     return {
       'Authorization': `Bearer ${token}`,
       'Content-Type': 'application/json'
