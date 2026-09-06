@@ -14,7 +14,7 @@ export default function AdminDashboard() {
   const [threats, setThreats] = useState<any[]>([]);
   const [registeredUsers, setRegisteredUsers] = useState<DatabaseUser[]>([]);
   const [activity, setActivity] = useState<any[]>([]);
-  const [graphData, setGraphData] = useState({ nodes: [], links: [] });
+  const [graphData, setGraphData] = useState<any>({ nodes: [], links: [] });
   const [isLoading, setIsLoading] = useState(true);
 
   const [traceId, setTraceId] = useState('');
