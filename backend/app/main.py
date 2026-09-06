@@ -260,6 +260,7 @@ def login(user_data: UserAuthSchema, request: Request):
 def log_stream(log_data: dict, request: Request):
     conn = get_db_connection()
     cur = conn.cursor()
+    
     # Decode JWT to get user_id for graph logic
     auth_header = request.headers.get("Authorization", "")
     user_id = None
@@ -271,13 +272,20 @@ def log_stream(log_data: dict, request: Request):
         except:
             pass
 
+    # 🔥 CRITICAL FIX: Get true IP through Render's Load Balancer
+    forwarded_for = request.headers.get("X-Forwarded-For")
+    if forwarded_for:
+        true_ip = forwarded_for.split(",")[0].strip()
+    else:
+        true_ip = request.client.host if request.client else "Unknown"
+
     cur.execute('''
         INSERT INTO stream_logs (session_token, movie_title, ip_address, location, user_id) 
         VALUES (%s, %s, %s, %s, %s)
     ''', (
         log_data.get("session_token", "Unknown"), 
         log_data.get("movie_title", "Unknown"), 
-        request.client.host if request.client else "Unknown", 
+        true_ip, # <-- Using the true IP here
         request.headers.get("X-Mock-City", "Unknown"),
         user_id
     ))
