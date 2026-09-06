@@ -1,4 +1,8 @@
 fastapi
 uvicorn
-email-validator
 psycopg2-binary
+pydantic
+PyJWT
+numpy
+scikit-learn
+xgboost
