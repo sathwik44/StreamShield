@@ -15,10 +15,22 @@ export default function ThreatTrace() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+  // Helper to get authorization headers matching WatchScreen.tsx
+  const getAuthHeaders = () => {
+    const token = localStorage.getItem('access_token'); 
+    return {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json'
+    };
+  };
+
   const handleSeedDB = async () => {
     setLoading(true);
     try {
-      await fetch(`${import.meta.env.VITE_API_URL}/api/admin/seed`, { method: 'POST' });
+      await fetch(`${import.meta.env.VITE_API_URL}/api/admin/seed`, { 
+        method: 'POST',
+        headers: getAuthHeaders() // Added Auth Headers
+      });
       alert("Test targets injected into live database! Try tracing 'sess_hacker999' or 'sess_bob456'.");
     } catch (err) {
       alert("Failed to seed database.");
@@ -38,8 +50,10 @@ export default function ThreatTrace() {
     setResult(null);
 
     try {
-      // Calling the specific session trace endpoint on your live Render backend
-      const response = await fetch(`${import.meta.env.VITE_API_URL}/api/admin/trace/${sessionId.trim()}`);
+      // Calling the specific session trace endpoint with Auth Headers
+      const response = await fetch(`${import.meta.env.VITE_API_URL}/api/admin/trace/${sessionId.trim()}`, {
+        headers: getAuthHeaders() // Added Auth Headers
+      });
       const data = await response.json();
 
       if (!response.ok) {
@@ -69,7 +83,6 @@ export default function ThreatTrace() {
           style={{ padding: '10px', width: '300px', backgroundColor: '#222', color: '#fff', border: '1px solid #444', borderRadius: '4px' }}
         />
         
-        {/* BUTTON 1: THE TRACE BUTTON (This fixes the Vercel error!) */}
         <button 
           onClick={handleTrace}
           disabled={loading}
@@ -78,7 +91,6 @@ export default function ThreatTrace() {
           EXECUTE TRACE
         </button>
 
-        {/* BUTTON 2: YOUR NEW INJECTION BUTTON */}
         <button 
           onClick={handleSeedDB}
           disabled={loading}

@@ -43,9 +43,12 @@ export default function AuthScreen({ onLogin }: AuthScreenProps) {
         setSuccessMsg("Registration successful! Please log in."); 
         setPassword(""); 
       } else {
-        // 🚀 THE FIX: Save the session ID so the video player can read it
+        // 🚀 THE FIX: Save BOTH the session ID and the access token
         if (data.session_id) {
           localStorage.setItem("session_id", data.session_id);
+        }
+        if (data.access_token) {
+          localStorage.setItem("access_token", data.access_token);
         }
         
         // Send the token and the role (admin or user) back up to App.tsx

@@ -14,8 +14,8 @@ export default function MovieCatalog({ onPlayClick }: MovieCatalogProps) {
       tag: "BLOCKBUSTER PREMIERE",
       description: "An epic action drama centered around a legendary warrior kingdom, familial betrayal, and an exiled heir who returns to reclaim his rightful throne.",
       backdropUrl: "https://ksboxoffice.com/wp-content/uploads/2025/10/G4F6mdxXgAAhtFA-e1761936174468-1024x580.jpg", 
-      // 🚀 YOUTUBE LINK RESTORED HERE
-      streamUrl: "https://www.youtube.com/embed/22oYiWnAcKM" 
+      // Mapped to local backend asset filename matching main.py's VIDEO_PATH = f"assets/trailers/{video_id}"
+      streamUrl: "baahubali.mp4" 
     },
     {
       id: 2,
@@ -23,8 +23,7 @@ export default function MovieCatalog({ onPlayClick }: MovieCatalogProps) {
       tag: "FEATURED SHORT FILM",
       description: "A stylish, fast-paced cinematic short featuring brilliant practical lighting and high-tension scene composition.",
       backdropUrl: "https://images.unsplash.com/photo-1485846234645-a62644f84728?q=80&w=2059&auto=format&fit=crop", 
-      // 🚀 YOUTUBE LINK RESTORED HERE
-      streamUrl: "https://www.youtube.com/embed/dQw4w9WgXcQ" 
+      streamUrl: "lighter.mp4" 
     },
     {
       id: 3,
@@ -32,8 +31,7 @@ export default function MovieCatalog({ onPlayClick }: MovieCatalogProps) {
       tag: "NEW RELEASE",
       description: "A gripping thriller about a detective who uncovers a conspiracy that goes to the highest levels of power.",
       backdropUrl: "https://images.unsplash.com/photo-1542204165-65bf26472b9b?q=80&w=2070&auto=format&fit=crop", 
-      // 🚀 YOUTUBE LINK RESTORED HERE
-      streamUrl: "https://www.youtube.com/embed/9bZkp7q19f0" 
+      streamUrl: "shadow.mp4" 
     }
   ];
 

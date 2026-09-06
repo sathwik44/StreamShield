@@ -78,11 +78,12 @@ export default function VideoPlayer({ title, videoUrl, sessionId, onClose }: Vid
           {isFullscreen ? "⛶ EXIT FULLSCREEN" : "⛶ FULLSCREEN"}
         </button>
 
-        <iframe 
-            src={`${videoUrl}?autoplay=1&controls=1&modestbranding=1&rel=0&fs=0`} 
-            className="w-full h-full" 
-            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen"
-            title={title}
+        <video 
+            src={`${import.meta.env.VITE_API_URL}/api/video/stream/${videoUrl}`} 
+            className="w-full h-full object-cover" 
+            controls 
+            autoPlay 
+            controlsList="nodownload"
         />
       </div>
     </div>

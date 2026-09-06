@@ -5,12 +5,18 @@ import uuid
 import hashlib
 import math
 from datetime import datetime
-from fastapi import FastAPI, HTTPException, Request, Response
+import jwt
+import numpy as np
+from sklearn.ensemble import RandomForestClassifier
+import xgboost as xgb
+from fastapi import FastAPI, HTTPException, Request, Response, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
+from collections import defaultdict
 
-# --- 1. APP SETUP ---
+# --- 1. APP SETUP & ML INITIALIZATION ---
 app = FastAPI(title="SecureStream Enterprise")
+JWT_SECRET = os.getenv("JWT_SECRET_KEY", "super_secret_key_123")
 
 app.add_middleware(
     CORSMiddleware,
@@ -18,9 +24,24 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    # CRITICAL FOR VIDEO STREAMING TO WORK ON VERCEL:
     expose_headers=["Content-Range", "Accept-Ranges"] 
 )
+
+# Train ML Models on server start (Synthetic Data: [distance_km, time_diff_hours, login_attempts])
+X_train = np.array([[10, 5, 1], [1500, 1, 5], [50, 2, 1], [3000, 0.5, 10]])
+y_train = np.array([0, 1, 0, 1]) # 0 = Safe, 1 = Piracy Risk
+
+rf_model = RandomForestClassifier(n_estimators=10, random_state=42)
+rf_model.fit(X_train, y_train)
+xgb_model = xgb.XGBClassifier(use_label_encoder=False, eval_metric='logloss')
+xgb_model.fit(X_train, y_train)
+
+def get_ml_risk_score(distance_km, time_diff_hours, login_attempts=1):
+    features = np.array([[distance_km, time_diff_hours, login_attempts]])
+    rf_prob = rf_model.predict_proba(features)[0][1]
+    xgb_prob = xgb_model.predict_proba(features)[0][1]
+    hybrid_risk = (rf_prob * 0.5) + (xgb_prob * 0.5)
+    return int(hybrid_risk * 100)
 
 # --- 2. CITY COORDINATES ---
 CITIES = {
@@ -33,7 +54,6 @@ def calculate_distance(city1: str, city2: str):
     if city1 not in CITIES or city2 not in CITIES: return 0
     lat1, lon1 = CITIES[city1]
     lat2, lon2 = CITIES[city2]
-    
     R = 6371 
     dlat = math.radians(lat2 - lat1)
     dlon = math.radians(lon2 - lon1)
@@ -41,12 +61,11 @@ def calculate_distance(city1: str, city2: str):
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
     return R * c
 
-# --- 3. DATABASE SETUP (Neon PostgreSQL) ---
+# --- 3. DATABASE SETUP ---
 def get_db_connection():
     DATABASE_URL = os.getenv("DATABASE_URL")
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL environment variable is missing.")
-        
     conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
     conn.autocommit = True 
     return conn
@@ -74,7 +93,6 @@ def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
-        # FIX: The missing table that caused the 500 crash!
         cur.execute('''
             CREATE TABLE IF NOT EXISTS stream_logs (
                 id SERIAL PRIMARY KEY,
@@ -82,7 +100,8 @@ def init_db():
                 movie_title TEXT NOT NULL,
                 access_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 ip_address TEXT,
-                location TEXT
+                location TEXT,
+                user_id INTEGER
             )
         ''')
         cur.close()
@@ -104,11 +123,56 @@ def enforce_risk_threshold(email: str):
     user = cur.fetchone()
     cur.close()
     conn.close()
-    
     if user and user["suspicion_score"] >= 80:
         raise HTTPException(status_code=403, detail="Account Locked: Suspicious sharing activity detected. Risk Score > 80%.")
 
+def get_current_admin(request: Request):
+    """Dependency to enforce JWT validation and admin role on protected routes."""
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid authentication token")
+    
+    token = auth_header.split(" ")[1]
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+        if payload.get("role") != "admin":
+            raise HTTPException(status_code=403, detail="Insufficient permissions. Admin access required.")
+        return payload
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Session expired. Please log in again.")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid authentication token.")
+
 # --- 5. ROUTES ---
+@app.get("/api/video/stream/{video_id}")
+def stream_video(video_id: str, request: Request):
+    VIDEO_PATH = f"assets/trailers/{video_id}" 
+    
+    if not os.path.exists(VIDEO_PATH):
+        raise HTTPException(status_code=404, detail="Secure asset not found on server.")
+
+    file_size = os.path.getsize(VIDEO_PATH)
+    range_header = request.headers.get("Range")
+    
+    if not range_header:
+        start = 0
+        end = min(file_size - 1, 1024 * 1024) 
+    else:
+        start = int(range_header.replace("bytes=", "").split("-")[0])
+        end = min(start + (1024 * 1024), file_size - 1) 
+
+    with open(VIDEO_PATH, "rb") as video:
+        video.seek(start)
+        data = video.read(end - start + 1)
+
+    headers = {
+        "Content-Range": f"bytes {start}-{end}/{file_size}",
+        "Accept-Ranges": "bytes",
+        "Content-Length": str(len(data)),
+        "Content-Type": "video/mp4",
+    }
+    return Response(content=data, status_code=206, headers=headers)
+
 @app.post("/api/auth/register")
 def register(user_data: UserAuthSchema):
     conn = get_db_connection()
@@ -142,31 +206,31 @@ def login(user_data: UserAuthSchema, request: Request):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     current_city = request.headers.get("X-Mock-City", "Vijayawada")
-    
     cur.execute("SELECT location, created_at FROM active_sessions WHERE user_id = %s ORDER BY created_at DESC LIMIT 1", (user["id"],))
     last_session = cur.fetchone()
 
+    # Rule-Based + ML Threat Detection
     if last_session and last_session["location"] != current_city:
         distance_km = calculate_distance(last_session["location"], current_city)
-        
         last_time = last_session["created_at"]
         if isinstance(last_time, str):
             last_time = datetime.strptime(last_time.split(".")[0], "%Y-%m-%d %H:%M:%S")
             
-        time_diff_hours = (datetime.utcnow() - last_time).total_seconds() / 3600
-        time_diff_hours = max(time_diff_hours, 0.001) 
-        speed_kmh = distance_km / time_diff_hours
+        time_diff_hours = max((datetime.utcnow() - last_time).total_seconds() / 3600, 0.001) 
         
-        if speed_kmh > 1000:
-            new_score = user["suspicion_score"] + 20
+        # Calculate Risk with Random Forest / XGBoost
+        ml_risk_score = get_ml_risk_score(distance_km, time_diff_hours)
+        
+        if ml_risk_score > 50:
+            new_score = user["suspicion_score"] + int(ml_risk_score / 2)
             cur.execute("UPDATE users SET suspicion_score = %s WHERE id = %s", (new_score, user["id"]))
-            
             if new_score >= 80:
                 cur.execute("DELETE FROM active_sessions WHERE user_id = %s", (user["id"],))
                 cur.close()
                 conn.close()
-                raise HTTPException(status_code=403, detail="Account Locked: Risk Score hit 80%.")
+                raise HTTPException(status_code=403, detail="Account Locked: ML Risk Score hit 80%.")
 
+    # Clear old sessions
     cur.execute("SELECT id FROM active_sessions WHERE user_id = %s ORDER BY created_at ASC", (user["id"],))
     sessions = cur.fetchall()
     if len(sessions) >= 2:
@@ -177,12 +241,15 @@ def login(user_data: UserAuthSchema, request: Request):
     
     cur.execute("SELECT suspicion_score FROM users WHERE id = %s", (user["id"],))
     final_score = cur.fetchone()["suspicion_score"]
-    
     cur.close()
     conn.close()
+
+    # TRUE JWT GENERATION
+    jwt_payload = {"user_id": user["id"], "role": user["role"], "exp": datetime.utcnow().timestamp() + 3600}
+    signed_jwt = jwt.encode(jwt_payload, JWT_SECRET, algorithm="HS256")
         
     return {
-        "access_token": f"token-{user['id']}", 
+        "access_token": signed_jwt, 
         "token_type": "bearer",
         "role": user["role"],
         "session_id": new_token,
@@ -193,21 +260,33 @@ def login(user_data: UserAuthSchema, request: Request):
 def log_stream(log_data: dict, request: Request):
     conn = get_db_connection()
     cur = conn.cursor()
+    # Decode JWT to get user_id for graph logic
+    auth_header = request.headers.get("Authorization", "")
+    user_id = None
+    if auth_header.startswith("Bearer "):
+        try:
+            token = auth_header.split(" ")[1]
+            payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+            user_id = payload.get("user_id")
+        except:
+            pass
+
     cur.execute('''
-        INSERT INTO stream_logs (session_token, movie_title, ip_address, location) 
-        VALUES (%s, %s, %s, %s)
+        INSERT INTO stream_logs (session_token, movie_title, ip_address, location, user_id) 
+        VALUES (%s, %s, %s, %s, %s)
     ''', (
         log_data.get("session_token", "Unknown"), 
         log_data.get("movie_title", "Unknown"), 
         request.client.host if request.client else "Unknown", 
-        request.headers.get("X-Mock-City", "Unknown")
+        request.headers.get("X-Mock-City", "Unknown"),
+        user_id
     ))
     conn.commit()
     cur.close()
     conn.close()
     return {"status": "logged"}
 
-@app.get("/api/admin/users")
+@app.get("/api/admin/users", dependencies=[Depends(get_current_admin)])
 def get_all_users():
     conn = get_db_connection()
     cur = conn.cursor()
@@ -218,7 +297,6 @@ def get_all_users():
     for u in users:
         cur.execute("SELECT session_token FROM active_sessions WHERE user_id = %s ORDER BY created_at DESC LIMIT 1", (u["id"],))
         latest_session = cur.fetchone()
-        
         join_date = u["created_at"].strftime("%Y-%m-%d %H:%M:%S") if isinstance(u["created_at"], datetime) else u["created_at"]
         
         result.append({
@@ -229,52 +307,35 @@ def get_all_users():
             "session_id": latest_session["session_token"] if latest_session else "N/A",
             "risk_score": u["suspicion_score"]
         })
-        
     cur.close()
     conn.close()
     return result
 
-@app.get("/api/admin/threats")
+@app.get("/api/admin/threats", dependencies=[Depends(get_current_admin)])
 def get_threat_heap():
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute('''
-        SELECT email, suspicion_score 
-        FROM users 
-        WHERE suspicion_score > 0 
-        ORDER BY suspicion_score DESC
-    ''')
+    cur.execute('''SELECT email, suspicion_score FROM users WHERE suspicion_score > 0 ORDER BY suspicion_score DESC''')
     threats = cur.fetchall()
     cur.close()
     conn.close()
-    
-    result = []
-    for t in threats:
-        result.append({
-            "user": t["email"],
-            "score": t["suspicion_score"],
-            "reason": "Geographic Anomaly / Impossible Travel"
-        })
-    return result
+    return [{"user": t["email"], "score": t["suspicion_score"], "reason": "ML Predicted Geographic Anomaly"} for t in threats]
 
-@app.get("/api/admin/trace/{session_id}")
+@app.get("/api/admin/trace/{session_id}", dependencies=[Depends(get_current_admin)])
 def trace_by_session(session_id: str):
     conn = get_db_connection()
     cur = conn.cursor()
-    query = '''
+    cur.execute('''
         SELECT u.email, u.suspicion_score, a.location, a.created_at
         FROM active_sessions a
         JOIN users u ON a.user_id = u.id
         WHERE a.session_token = %s
-    '''
-    cur.execute(query, (session_id,))
+    ''', (session_id,))
     culprit = cur.fetchone()
     cur.close()
     conn.close()
     
-    if not culprit:
-        raise HTTPException(status_code=404, detail="Trace Failed: Session ID not found or already deleted.")
-        
+    if not culprit: raise HTTPException(status_code=404, detail="Trace Failed: Session ID not found.")
     login_time = culprit["created_at"].strftime("%Y-%m-%d %H:%M:%S") if isinstance(culprit["created_at"], datetime) else culprit["created_at"]
         
     return {
@@ -285,17 +346,15 @@ def trace_by_session(session_id: str):
         "login_time": login_time
     }
 
-@app.post("/api/admin/seed")
+@app.post("/api/admin/seed", dependencies=[Depends(get_current_admin)])
 def seed_database():
     conn = get_db_connection()
     cur = conn.cursor()
-    
     targets = [
         ("hacker_delhi@test.com", "password123", 85),
         ("suspicious_bob@test.com", "password123", 40),
         ("normal_alice@test.com", "password123", 0)
     ]
-    
     for email, pw, score in targets:
         hashed_pw = hashlib.sha256(pw.encode('utf-8')).hexdigest()
         cur.execute('''
@@ -303,65 +362,78 @@ def seed_database():
             SELECT %s, %s, %s 
             WHERE NOT EXISTS (SELECT 1 FROM users WHERE email = %s)
         ''', (email, hashed_pw, score, email))
-    
-    cur.execute("SELECT id, email FROM users WHERE email IN ('hacker_delhi@test.com', 'suspicious_bob@test.com')")
-    users = cur.fetchall()
-    
-    for u in users:
-        cur.execute("SELECT 1 FROM active_sessions WHERE user_id = %s", (u["id"],))
-        if not cur.fetchone():
-            token = "sess_hacker999" if u["email"] == "hacker_delhi@test.com" else "sess_bob456"
-            loc = "Delhi" if u["email"] == "hacker_delhi@test.com" else "Mumbai"
-            cur.execute("INSERT INTO active_sessions (user_id, session_token, location) VALUES (%s, %s, %s)", 
-                        (u["id"], token, loc))
-            
     conn.commit()
     cur.close()
     conn.close()
     return {"msg": "System seeded safely."}
 
-@app.get("/api/video/stream/{video_id}")
-def stream_video(video_id: str, request: Request):
-    VIDEO_PATH = "assets/trailers/the_lighter.mp4"
-    if not os.path.exists(VIDEO_PATH):
-        raise HTTPException(status_code=404, detail="Secure asset not found on server.")
-
-    file_size = os.path.getsize(VIDEO_PATH)
-    range_header = request.headers.get("Range")
-    
-    if not range_header:
-        start = 0
-        end = min(file_size - 1, 1024 * 1024) 
-    else:
-        start = int(range_header.replace("bytes=", "").split("-")[0])
-        end = min(start + (1024 * 1024), file_size - 1) 
-
-    with open(VIDEO_PATH, "rb") as video:
-        video.seek(start)
-        data = video.read(end - start + 1)
-
-    headers = {
-        "Content-Range": f"bytes {start}-{end}/{file_size}",
-        "Accept-Ranges": "bytes",
-        "Content-Length": str(len(data)),
-        "Content-Type": "video/mp4",
-    }
-    return Response(content=data, status_code=206, headers=headers)
-
-@app.get("/api/admin/activity")
+@app.get("/api/admin/activity", dependencies=[Depends(get_current_admin)])
 def get_recent_activity():
     conn = get_db_connection()
     cur = conn.cursor()
-    # FIX: Correctly join logs to users through active_sessions
     cur.execute('''
         SELECT u.email, l.movie_title, l.ip_address, l.location, l.access_time 
         FROM stream_logs l
         JOIN active_sessions a ON a.session_token = l.session_token
         JOIN users u ON u.id = a.user_id
-        ORDER BY l.access_time DESC
-        LIMIT 20
+        ORDER BY l.access_time DESC LIMIT 20
     ''')
     logs = cur.fetchall()
     cur.close()
     conn.close()
     return logs
+
+@app.get("/api/admin/clusters", dependencies=[Depends(get_current_admin)])
+def detect_sharing_clusters():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT user_id, ip_address FROM stream_logs WHERE ip_address IS NOT NULL AND user_id IS NOT NULL")
+    logs = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    # --- UNION-FIND ---
+    parent = {}
+    def find(i):
+        if parent[i] == i: return i
+        parent[i] = find(parent[i])
+        return parent[i]
+    
+    def union(i, j):
+        root_i = find(i)
+        root_j = find(j)
+        if root_i != root_j: parent[root_i] = root_j
+
+    for log in logs:
+        user_node = f"User_{log['user_id']}"
+        ip_node = f"IP_{log['ip_address']}"
+        if user_node not in parent: parent[user_node] = user_node
+        if ip_node not in parent: parent[ip_node] = ip_node
+        union(user_node, ip_node)
+
+    # --- BFS (Adjacency List) ---
+    graph = defaultdict(list)
+    for log in logs:
+        user_node = f"User_{log['user_id']}"
+        ip_node = f"IP_{log['ip_address']}"
+        if ip_node not in graph[user_node]:
+            graph[user_node].append(ip_node)
+            graph[ip_node].append(user_node)
+
+    # Explicit BFS Traversal to map out the clusters structurally
+    visited = set()
+    bfs_paths = []
+    
+    for node in graph:
+        if node not in visited:
+            queue = [node]
+            cluster_path = []
+            while queue:
+                current = queue.pop(0)
+                if current not in visited:
+                    visited.add(current)
+                    cluster_path.append(current)
+                    queue.extend([neighbor for neighbor in graph[current] if neighbor not in visited])
+            bfs_paths.append(cluster_path)
+
+    return {"adjacency_list": graph, "clusters": parent, "bfs_traversal": bfs_paths}

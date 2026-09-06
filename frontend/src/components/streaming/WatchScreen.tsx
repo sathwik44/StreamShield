@@ -13,7 +13,10 @@ export default function WatchScreen() {
     try {
       await fetch(`${import.meta.env.VITE_API_URL}/api/logs/stream`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem("access_token")}` // <--- THIS IS CRITICAL
+        },
         body: JSON.stringify({
           session_token: localStorage.getItem("session_id"),
           movie_title: title
@@ -22,6 +25,7 @@ export default function WatchScreen() {
     } catch (error) {
       console.error("Telemetry failed:", error);
     }
+// ... rest of the function stays the same
 
     setCurrentMovieTitle(title);
     setCurrentMovieUrl(url);

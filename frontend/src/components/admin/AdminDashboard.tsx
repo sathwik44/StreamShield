@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import ForceGraph2D from 'react-force-graph-2d';
 
 interface DatabaseUser {
   id: number;
@@ -12,7 +13,8 @@ interface DatabaseUser {
 export default function AdminDashboard() {
   const [threats, setThreats] = useState<any[]>([]);
   const [registeredUsers, setRegisteredUsers] = useState<DatabaseUser[]>([]);
-  const [activity, setActivity] = useState<any[]>([]); // Added Activity State
+  const [activity, setActivity] = useState<any[]>([]);
+  const [graphData, setGraphData] = useState({ nodes: [], links: [] });
   const [isLoading, setIsLoading] = useState(true);
 
   const [traceId, setTraceId] = useState('');
@@ -21,17 +23,62 @@ export default function AdminDashboard() {
   const [isTracing, setIsTracing] = useState(false);
   const [isSeeding, setIsSeeding] = useState(false);
 
+  // Helper to get authorization headers
+  const getAuthHeaders = () => {
+    const token = localStorage.getItem('token'); // Adjust this key if your AuthScreen saves it differently
+    return {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json'
+    };
+  };
+
   const fetchDashboardData = async () => {
     setIsLoading(true);
     try {
-      const usersResponse = await fetch(`${import.meta.env.VITE_API_URL}/api/admin/users`, { cache: "no-store" });
+      const usersResponse = await fetch(`${import.meta.env.VITE_API_URL}/api/admin/users`, { 
+        cache: "no-store",
+        headers: getAuthHeaders() 
+      });
       if (usersResponse.ok) setRegisteredUsers(await usersResponse.json());
 
-      const threatsResponse = await fetch(`${import.meta.env.VITE_API_URL}/api/admin/threats`, { cache: "no-store" });
+      const threatsResponse = await fetch(`${import.meta.env.VITE_API_URL}/api/admin/threats`, { 
+        cache: "no-store",
+        headers: getAuthHeaders() 
+      });
       if (threatsResponse.ok) setThreats(await threatsResponse.json());
 
-      const activityResponse = await fetch(`${import.meta.env.VITE_API_URL}/api/admin/activity`, { cache: "no-store" });
+      const activityResponse = await fetch(`${import.meta.env.VITE_API_URL}/api/admin/activity`, { 
+        cache: "no-store",
+        headers: getAuthHeaders() 
+      });
       if (activityResponse.ok) setActivity(await activityResponse.json());
+
+      const clusterResponse = await fetch(`${import.meta.env.VITE_API_URL}/api/admin/clusters`, { 
+        cache: "no-store",
+        headers: getAuthHeaders() 
+      });
+      if (clusterResponse.ok) {
+        const data = await clusterResponse.json();
+        const nodes: any[] = [];
+        const links: any[] = [];
+        const addedNodes = new Set();
+
+        // Process adjacency list into React-Force-Graph format
+        Object.entries(data.adjacency_list).forEach(([nodeId, neighbors]: [string, any]) => {
+          if (!addedNodes.has(nodeId)) {
+            nodes.push({ id: nodeId, group: nodeId.startsWith('User_') ? 1 : 2 });
+            addedNodes.add(nodeId);
+          }
+          neighbors.forEach((neighbor: string) => {
+            if (!addedNodes.has(neighbor)) {
+              nodes.push({ id: neighbor, group: neighbor.startsWith('User_') ? 1 : 2 });
+              addedNodes.add(neighbor);
+            }
+            links.push({ source: nodeId, target: neighbor });
+          });
+        });
+        setGraphData({ nodes, links });
+      }
     } catch (error) {
       console.error("Failed to fetch dashboard data:", error);
     } finally {
@@ -50,7 +97,9 @@ export default function AdminDashboard() {
     setTraceResult(null);
 
     try {
-      const response = await fetch(`${import.meta.env.VITE_API_URL}/api/admin/trace/${traceId.trim()}`);
+      const response = await fetch(`${import.meta.env.VITE_API_URL}/api/admin/trace/${traceId.trim()}`, {
+        headers: getAuthHeaders()
+      });
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || 'Trace Failed.');
       setTraceResult(data);
@@ -64,7 +113,10 @@ export default function AdminDashboard() {
   const handleSeedDB = async () => {
     setIsSeeding(true);
     try {
-      await fetch(`${import.meta.env.VITE_API_URL}/api/admin/seed`, { method: 'POST' });
+      await fetch(`${import.meta.env.VITE_API_URL}/api/admin/seed`, { 
+        method: 'POST',
+        headers: getAuthHeaders()
+      });
       alert("Test targets injected successfully!");
       fetchDashboardData(); 
     } catch (err) {
@@ -143,6 +195,24 @@ export default function AdminDashboard() {
               ))
             )}
           </div>
+        </div>
+      </div>
+
+      {/* INTERACTIVE GRAPH VISUALIZATION */}
+      <div className="bg-neutral-900/50 border border-neutral-800 p-6 rounded-xl space-y-4 backdrop-blur-md shadow-xl">
+        <h3 className="font-bold text-lg border-b border-neutral-800 pb-2 text-white">Interactive Threat Network (BFS & Union-Find)</h3>
+        <p className="text-sm text-neutral-400">Visualizing overlapping IPs and User profiles. Red Nodes = Users, Blue Nodes = IP Addresses.</p>
+        <div className="h-96 border border-neutral-800 rounded-xl overflow-hidden bg-black flex justify-center items-center">
+          {graphData.nodes.length > 0 ? (
+            <ForceGraph2D
+              graphData={graphData}
+              nodeLabel="id"
+              nodeColor={(node: any) => node.group === 1 ? '#ef4444' : '#3b82f6'}
+              linkColor={() => 'rgba(255,255,255,0.2)'}
+            />
+          ) : (
+            <span className="text-neutral-500 font-mono text-sm">AWAITING CLUSTER DATA...</span>
+          )}
         </div>
       </div>
 
@@ -232,7 +302,6 @@ export default function AdminDashboard() {
             )}
           </div>
         </div>
-
       </div>
     </div>
   );
